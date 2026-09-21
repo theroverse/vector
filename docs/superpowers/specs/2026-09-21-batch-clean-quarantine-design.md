@@ -39,8 +39,14 @@ WebView com **dois caminhos**:
    próprio botão; desabilitado com explicação quando não há backup.
 2. **"Outro arquivo…"** — só então aparece o formulário: zona de drag &
    drop + botão "Selecionar arquivo…" (OpenFileDialog nativo via host).
-   Drop de arquivo no WebView2 expõe `File.path` (caminho local real); se
-   algum runtime não expuser, o formulário orienta usar o botão.
+   Drop tem **fallback híbrido**: se `File.path` vier preenchido (padrão
+   do WebView2 hoje), o caminho vai direto ao motor; se vier vazio, a
+   página lê o **conteúdo** do File (FileReader), envia ao host, que
+   grava em `%TEMP%\vector-drop-<uuid>.vec` e o fluxo segue identico a
+   partir dai — o usuario nao ve diferenca. Limitacao pratica do
+   fallback por conteudo: backups muito grandes (centenas de MB) ficam
+   lentos na travessia JS→PS; o seletor nativo segue instantaneo em
+   qualquer tamanho.
 
 O caminho escolhido vai ao engine (`backup-inspect`) e leva à **tela de
 Restauração**.
@@ -179,9 +185,10 @@ para restaurar (a menos que o destino exija).
 ## Host (VectorHost.ps1)
 
 Repasses novos (`quarantine-*`, `backup-*`, `open-backup` → `Invoke-Engine`
-→ JS), sem regra nenhuma aqui. Dois diálogos nativos: OpenFileDialog
-(selecionar `.vec`) e SaveFileDialog (exportar backup). Modelo síncrono 1:1
-inalterado. Registro HKCU da extensão no boot (acima).
+→ JS), sem regra nenhuma aqui. Diálogos nativos: OpenFileDialog (selecionar
+`.vec`) e SaveFileDialog (exportar backup); no fallback do drop sem path, o
+host materializa o conteudo recebido em `%TEMP%\vector-drop-<uuid>.vec`.
+Modelo síncrono 1:1 inalterado. Registro HKCU da extensão no boot (acima).
 
 ## Fora de escopo (YAGNI)
 
