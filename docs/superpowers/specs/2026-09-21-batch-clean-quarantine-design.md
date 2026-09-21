@@ -14,15 +14,36 @@ pode ou não apagar uma pasta.
 
 1. **Agrupamento por nível de risco** (não por programa).
 2. **Quarentena própria** com manifesto (não Lixeira, não hard delete).
-3. **Restauração pela GUI** (tela Quarentena), não só CLI.
+3. **Restauração pela GUI** (telas Quarentena/Restauração), não só CLI —
+   com diálogo de seleção em dois caminhos: último backup automático ou
+   arquivo `.vec` informado pelo usuário (drag & drop / seletor nativo).
 4. **Arquitetura A**: GUI orquestra o lote item a item; agrupamento é
    apresentação (JS); quarentena/zip/manifest/restore moram no Python.
-5. **Quarentena guarda só a última execução**, compactada em zip.
+5. **Quarentena guarda só a última execução**, compactada em arquivo único
+   com extensão própria **`.vec`** (mesma lógica da Athena com `.atn.md`:
+   dedicada pra não colidir), **portável** (manifesto dentro do zip) e
+   **associada no Windows** — duplo-clique num `.vec` abre o Vector direto
+   na tela de restauração.
 
 ## Fluxo novo (GUI)
 
-`welcome → scan → review → plan → executing → done` + tela utilitária
-`quarantine` (acessível pela barra lateral a qualquer momento).
+`welcome → scan → review → plan → executing → done` + duas telas utilitárias
+acessíveis a qualquer momento pela barra lateral: `quarantine` (backup
+ativo) e o fluxo `restore` (abrir qualquer `.vec`).
+
+Barra lateral ganha o item fixo **"Restaurar backup"** → modal na própria
+WebView com **dois caminhos**:
+
+1. **"Último backup automático"** (botão primário) — abre direto a tela de
+   Restauração do `.vec` ativo da quarentena; mostra data/tamanho no
+   próprio botão; desabilitado com explicação quando não há backup.
+2. **"Outro arquivo…"** — só então aparece o formulário: zona de drag &
+   drop + botão "Selecionar arquivo…" (OpenFileDialog nativo via host).
+   Drop de arquivo no WebView2 expõe `File.path` (caminho local real); se
+   algum runtime não expuser, o formulário orienta usar o botão.
+
+O caminho escolhido vai ao engine (`backup-inspect`) e leva à **tela de
+Restauração**.
 
 ### Revisão (review)
 
@@ -64,16 +85,35 @@ quarentena anterior) e segue para o relatório.
 
 ### Relatório (done)
 
-Removidos / falharam / pulados, com o destino (quarentena) e botão
-"Abrir quarentena".
+Removidos / falharam / pulados, com o destino (quarentena) e dois botões:
+**"Abrir quarentena"** e **"Salvar cópia do backup…"** (SaveFileDialog via
+host; copia o `.vec` ativo para onde o usuário quiser — ex.: um pendrive —
+sem tirar nada da quarentena).
 
-### Tela Quarentena
+### Tela Quarentena (backup ativo)
 
-Mostra a última execução: data, itens (nome + caminho original + tamanho),
-tamanho do zip. Botões: **Restaurar tudo** (each: se o caminho de origem já
-existe, pula com aviso no feed; senão extrai de volta e remove a entrada) e
-**Esvaziar** (hard delete do zip+manifesto — único ponto de apagamento
-definitivo da GUI). Sem quarentena: estado vazio explicativo.
+Mostra o `.vec` da última execução: data, tamanho do arquivo, itens
+agrupados pelas mesmas seções de risco da Revisão. Botões:
+**"Restaurar selecionados"** (loop item a item igual à Execução) e
+**"Esvaziar"** (apaga o `.vec` — único ponto de apagamento definitivo da
+quarentena). Sem backup: estado vazio explicativo. Restaurar **todos** os
+itens do backup ativo remove o `.vec` ao final (quarentena esvaziada por
+definição — guarda só a última execução).
+
+### Tela Restauração (qualquer `.vec`, incluindo cópia exportada)
+
+Mesma apresentação da Revisão (seções por risco, frase-motivo, checkbox de
+grupo/item, seleção padrão idêntica) — os metadados de decisão (`kind`,
+`confidence`, `sensitive`, `label`, `summaryPlain`, `original`, tamanho)
+são lidos do manifesto **dentro** do arquivo, sem depender de scan nem de
+máquina específica. Rodapé: "N itens selecionados · botão Restaurar
+caminho". Execução em loop por item com feed ✓/✗.
+
+**Semântica distinta (crítico):**
+- backup **ativo** (quarentena): restaurar *move* de volta e remove a
+  entrada do arquivo;
+- `.vec` **externo** (copia exportada): restaurar *copia* de volta — o
+  backup permanece intacto (é um backup, não uma lixeira).
 
 ## Motor (Python)
 
@@ -88,44 +128,74 @@ ganha o campo novo sem remover nada — aditivo, retrocompatível).
 
 ### `quarantine.py` (novo módulo)
 
-- layout: `%LOCALAPPDATA%\Vector\quarantine\` com `staging\` durante a
-  execução, `backup.zip` + `manifest.json` selados. Entradas do zip:
-  `<id>/<caminho relativo>`; `manifest.json`: lista
-  `{id, original, archived, size_bytes, ts}` + `sealed_ts`.
+- **Formato `.vec`**: zip (ZIP_DEFLATED) auto-contido — `manifest.json` na
+  raiz do zip + itens sob `<id>/<caminho relativo>`. Manifesto por entrada:
+  `{id, original, archived, sizeBytes, ts, kind, confidence, sensitive,
+  label, summaryPlain}` + `sealed_ts` global. Tudo que a tela de
+  Restauração precisa vive dentro do arquivo.
+- local do backup ativo: `%LOCALAPPDATA%\Vector\quarantine\last.vec`;
+  durante a execução os itens movidos ficam em `staging\` ao lado.
 - `stage(candidate)` — move a pasta inteira para o staging (shutil.move);
   PermissionError vira falha reportada, nunca traceback.
-- `seal()` — compacta staging em `backup.zip` (ZIP_DEFLATED), escreve
-  manifesto, **substitui** (apaga) zip/manifesto/staging anteriores.
-  Idempotente; se staging existe e não foi selado (queda de energia),
-  `info()` chama `seal()` primeiro (nunca se perdem itens).
-- `info()` / `restore_all()` / `purge()` — usados pelos comandos do bridge.
+- `seal()` — compacta staging no `last.vec`, **substitui** o backup
+  anterior (retenção = só a última execução). Idempotente; staging órfão
+  (queda no meio) é selado pelo primeiro acesso (`inspect`).
+- `inspect(path)` / `restore_one(path, id, *, remove_entry)` /
+  `restore_done(path)` / `purge()` / `export(dest)` — usados pelos comandos
+  do bridge. `restore_one` com destino já existente → pula com motivo.
+  `remove_entry=True` só para o backup ativo (move + enxuga o arquivo);
+  para `.vec` externo é cópia e o arquivo não muda.
 - Sem dependências novas (zipfile/pathlib/shutil da stdlib).
 
 ### Bridge — comandos novos
 
-`remove` passa a mover para a quarentena (assinatura/resposta iguais, com
-`quarantined: true` + `sizeBytes`); novos: `quarantine-info`,
-`quarantine-seal`, `quarantine-restore`, `quarantine-purge`. O guard atual
+`remove` passa a mover para o staging da quarentena (assinatura/resposta
+iguais, com `quarantined: true` + `sizeBytes`); novos: `quarantine-seal`,
+`quarantine-inspect`, `quarantine-restore {id}` (por item, loop da GUI;
+move de volta e enxuga o last.vec), `quarantine-purge`,
+`quarantine-export {dest}`, `backup-inspect {path}` e
+`backup-restore {path, id}` (copia de volta; backup intacto). O guard atual
 (HIGH/MEDIUM only, só pasta, não-allowlisted, revalidação contra o report
 em memória) vale para todo `remove` do lote, inalterado. CLI `--clean`
 interativo do terminal mantém hard delete (comportamento auditado à parte;
 a GUI é o produto com quarentena).
 
+## Registro da extensão `.vec` no Windows
+
+No boot do **exe empacotado** (nunca em modo dev/script), o VectorHost.ps1
+garante a associação em **HKCU** (não exige admin; idempotente, barato):
+
+```
+HKCU\Software\Classes\.vec            = "Vector.Backup"
+HKCU\Software\Classes\Vector.Backup\shell\open\command
+    = "<caminho absoluto do Vector.exe>" --open "%1"
+```
+
+Duplo-clique num `.vec` → exe abre com `--open <caminho>` no `$args` →
+após o WebView2 conectar, o host envia `open-backup {path}` → JS cai direto
+na **tela de Restauração** daquele arquivo. Sem scan, sem admin necessário
+para restaurar (a menos que o destino exija).
+
 ## Host (VectorHost.ps1)
 
-Novos repasses de mensagem (`quarantine-*` → `Invoke-Engine` → resposta ao
-JS), sem regra nenhuma aqui. Sem mudança no modelo síncrono 1:1.
+Repasses novos (`quarantine-*`, `backup-*`, `open-backup` → `Invoke-Engine`
+→ JS), sem regra nenhuma aqui. Dois diálogos nativos: OpenFileDialog
+(selecionar `.vec`) e SaveFileDialog (exportar backup). Modelo síncrono 1:1
+inalterado. Registro HKCU da extensão no boot (acima).
 
 ## Fora de escopo (YAGNI)
 
-Restauração seletiva item a-item na GUI · retenção de mais de uma execução ·
-criptografia do zip · tela de configurações.
+Retenção de mais de uma execução · criptografia do `.vec` · tela de
+configurações · abrir `.vec` por linha de comando do Python (só pelo exe,
+que é quem tem a associação registrada).
 
 ## Testes
 
-- `test_quarantine.py`: stage/seal/restore/purge com tmp_path (inclui:
+- `test_quarantine.py`: stage/seal/inspect/restore_one (ativo move+
+enxuga; externo copia e preserva)/purge/export com tmp_path (inclui:
   restore com destino já existente pula; seal substitui execução anterior;
-  staging órfão é selado por info()).
+  staging órfão é selado por inspect(); `.vec` é auto-contido — abre e
+  restaura sem manifestos externos).
 - `test_bridge.py`: novos comandos + `remove` quarentenando (remove_fn
   injetado) + `summaryPlain` presente no payload de scan.
 - GUI: mock.js ganha candidatos com `summaryPlain` e a mesma estrutura de
