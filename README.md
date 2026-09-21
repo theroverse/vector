@@ -67,16 +67,29 @@ gui\VectorHost.ps1          # janela real (WebView2 + motor, pede admin)
 .\build.ps1                 # compila dist\Vector.exe (arquivo unico)
 ```
 
-Tela a tela: inicio → configuracao da varredura (alvo/confianca/verbose)
-→ arvore de evidencias (badges HIGH/MEDIUM/LOW, pesos, alerta de dado
-sensivel, comandos manuais para registro/servico/tarefa) → limpeza
-interativa (digite `REMOVER <n>` + confirme; Enter sempre pula) → resumo
-com log. O botao fechar confirma antes de sair.
+Tela a tela: início → configuração da varredura (alvo/confiança/verbose)
+→ **revisão por grupos de risco** ("quase certamente sobra", "provável
+sobra", "pasta com dados seus", LOW e registro/serviço/tarefa apenas
+informativos) com checkboxes por grupo, "marcar todos (exceto sensíveis)"
+e frase-motivo em linguagem humana por candidato → **plano** com lista
+fechada e uma única confirmação → **execução** em lote estilo Genesis
+(feed item a item) → concluído com acesso ao backup.
 
-> Seguranca no bridge: a digitacao/confirmacao da GUI e UX; o gate real e o
-> Python. O comando `remove` so apaga um caminho que o PROPRIO motor pontuou
-> como cleanable (HIGH/MEDIUM, tipo pasta, nao-allowlisted) na ultima
-> varredura em memoria — pedir para remover `C:\Windows` e recusado.
+Nada é apagado: as pastas são **movidas para a quarentena** — um único
+arquivo `last.vec` (zip compactado com manifesto, só a última execução) em
+`%LOCALAPPDATA%\Vector\quarantine`. A sidebar tem sempre o grupo **Backup**:
+"Quarentena" (restaurar itens — restaurar do ativo move de volta e enxuga o
+backup; o último item restaurado apaga o `.vec`) e "Restaurar backup…"
+(abre um `.vec` exportado — externo **copia** e preserva o arquivo; por
+arrastar-e-soltar ou seletor nativo, com trava de 20 MB no drop sem path).
+A extensão `.vec` é registrada em HKCU no primeiro run do exe: duplo-clique
+num backup abre o Vector direto na tela de restauração.
+
+> Segurança no bridge: a confirmação única da GUI é UX; o gate real é o
+> Python. O comando `remove` só move para a quarentena um caminho que o
+> PROPRIO motor pontuou como cleanable (HIGH/MEDIUM, tipo pasta,
+> nao-allowlisted) na ultima varredura em memoria — pedir para remover
+> `C:\Windows` e recusado.
 
 ## Build (padrao Genesis)
 
@@ -99,7 +112,7 @@ matiz aberto do ecossistema.
 ## Testes
 
 ```powershell
-python -m pytest tests/ -v      # motor (22 testes)
+python -m pytest tests/ -v      # motor (66 testes, incl. quarentena .vec)
 node --check gui/vector/app.js  # sintaxe da interface
 ```
 

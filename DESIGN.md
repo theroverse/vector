@@ -86,13 +86,20 @@ no AI generation standing in for product truth. Mock evidence data in
 
 ## Finish
 
-Phase 2 wired: `app.js` now drives the real engine through the WebView2
-`postMessage` bridge (`start-scan`/`remove-folder` → `scan-result`/
-`remove-result`), with `mock.js` kept only as the fallback when the page is
-opened directly in a browser or Python is missing. Verified here: the Python
-bridge (`vector-cli.py --serve`) end-to-end, the camelCase payload shape
-matching `mock.js`, the in-memory removal guard, and `node --check` on the
-JS. NOT verified (needs a real Windows run): the live WebView2 hosting inside
-the compiled `Vector.exe` — window drag, the persistent Python child process
-under UAC elevation, and the scan/clean round-trip on screen. Treat the first
+Batch flow (spec 2026-09-21): the old item-a-item `REMOVER <n>` screen is
+gone. Review groups by risk tier with group checkboxes and a single
+confirmation, then a Genesis-style execution loop drains the queue one
+`remove` at a time — every folder moves to the **quarantine** instead of
+being deleted: one self-contained `last.vec` (deflated zip + manifest,
+last-execution-only) under `%LOCALAPPDATA%\Vector\quarantine`. Restore from
+the active backup moves items back and shrinks the archive (empty ⇒ file
+deleted); restore from an external `.vec` copies and preserves it. The
+extension is registered per-user (HKCU) so double-click lands straight on the
+restore screen; the picker overlay takes a dropped/selected file with a 20 MB
+guard that falls back to the native dialog. Safety stays in Python: the GUI
+confirmation is UX, the bridge re-validates every path against the in-memory
+report. Verified: 66 pytest (quarantine round-trips on tmp_path only),
+`node --check`, PS parser, protocol smoke over real stdin, rebuilt exe.
+NOT verified (needs a real Windows run): live WebView2 hosting, HKCU
+association behavior and the on-screen restore round-trip. Treat the first
 real run on the target machine as the finish review.
