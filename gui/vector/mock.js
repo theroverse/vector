@@ -29,6 +29,7 @@ const VECTOR_MOCK = {
       sizeHuman: "118.5 KB",
       ageDays: 214,
       manualCommand: "",
+      summaryPlain: "não aparece na lista de programas instalados do Windows, mas ainda há pastas dele no sistema",
       evidences: [
         { description: "+40 nome ausente nos programas instalados", weight: 40, source: "filesystem" },
         { description: "+15 resta uninstall.exe sem entrada de desinstalacao", weight: 15, source: "filesystem" },
@@ -45,6 +46,7 @@ const VECTOR_MOCK = {
       sizeHuman: "46.0 MB",
       ageDays: 321,
       manualCommand: "",
+      summaryPlain: "não aparece na lista de programas instalados do Windows, mas ainda há pastas dele no sistema",
       evidences: [
         { description: "+40 nome ausente nos programas instalados", weight: 40, source: "filesystem" },
         { description: "+15 resta unins000.exe sem entrada de desinstalacao", weight: 15, source: "filesystem" },
@@ -62,6 +64,7 @@ const VECTOR_MOCK = {
       sizeHuman: "tamanho n/d",
       ageDays: null,
       manualCommand: "",
+      summaryPlain: "nome da pasta sugere dados de jogo/salvos — confira antes",
       evidences: [
         { description: "+40 nome ausente nos programas instalados", weight: 40, source: "filesystem" },
         { description: "+10 pasta vazia ou ilegivel", weight: 10, source: "filesystem" },
@@ -78,6 +81,7 @@ const VECTOR_MOCK = {
       sizeHuman: "tamanho n/d",
       ageDays: 903,
       manualCommand: "",
+      summaryPlain: "pasta parada há mais de 2 anos sem programa correspondente",
       evidences: [
         { description: "+40 nome ausente nos programas instalados", weight: 40, source: "filesystem" },
         { description: "+10 pasta abandonada (903 dias parada)", weight: 10, source: "filesystem" },
@@ -94,6 +98,7 @@ const VECTOR_MOCK = {
       sizeHuman: "tamanho n/d",
       ageDays: 1,
       manualCommand: "",
+      summaryPlain: "não aparece na lista de programas instalados do Windows, mas ainda há pastas dele no sistema",
       evidences: [
         { description: "+40 nome ausente nos programas instalados", weight: 40, source: "filesystem" },
       ],
@@ -109,6 +114,7 @@ const VECTOR_MOCK = {
       sizeHuman: "",
       ageDays: null,
       manualCommand: "Remova \"Docker Desktop\" de HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run via regedit.",
+      summaryPlain: "chave de inicialização aponta para um programa que não existe mais — a remoção é manual",
       evidences: [
         { description: "+30 Run aponta p/ binario inexistente", weight: 30, source: "registry" },
       ],
@@ -124,6 +130,7 @@ const VECTOR_MOCK = {
       sizeHuman: "",
       ageDays: null,
       manualCommand: "sc delete \"OldVPNService\"  (pare o servico antes; revise!)",
+      summaryPlain: "serviço aponta para um executável que não existe mais — a remoção é manual",
       evidences: [
         { description: "+20 servico aponta p/ executavel inexistente (C:\\Program Files\\OldVPN\\svc.exe)", weight: 20, source: "services" },
         { description: "+40 servico sem programa correspondente instalado", weight: 40, source: "services" },
@@ -140,6 +147,7 @@ const VECTOR_MOCK = {
       sizeHuman: "",
       ageDays: null,
       manualCommand: "schtasks /delete /tn \"\\OldUpdater\\DailyCheck\" /f  (revise antes!)",
+      summaryPlain: "tarefa agendada roda um programa que não existe mais — a remoção é manual",
       evidences: [
         { description: "+20 tarefa executa binario inexistente (C:\\Program Files\\OldUpdater\\check.exe)", weight: 20, source: "tasks" },
       ],
