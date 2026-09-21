@@ -86,9 +86,13 @@ no AI generation standing in for product truth. Mock evidence data in
 
 ## Finish
 
-Verified via preview in a Chromium engine (the page loads unmodified
-in any Chromium, including WebView2's) covering: welcome, scan setup,
-evidence tree with filters, clean queue with confirm/skip, done/log.
-Not verified: the real WebView2 hosting inside compiled `Vector.exe`
-(window drag, JS↔PowerShell bridge, UAC) — treat the first real run
-on the target machine as the finish review.
+Phase 2 wired: `app.js` now drives the real engine through the WebView2
+`postMessage` bridge (`start-scan`/`remove-folder` → `scan-result`/
+`remove-result`), with `mock.js` kept only as the fallback when the page is
+opened directly in a browser or Python is missing. Verified here: the Python
+bridge (`vector-cli.py --serve`) end-to-end, the camelCase payload shape
+matching `mock.js`, the in-memory removal guard, and `node --check` on the
+JS. NOT verified (needs a real Windows run): the live WebView2 hosting inside
+the compiled `Vector.exe` — window drag, the persistent Python child process
+under UAC elevation, and the scan/clean round-trip on screen. Treat the first
+real run on the target machine as the finish review.

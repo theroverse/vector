@@ -1,7 +1,7 @@
 """Report: arvore textual, filtro de confianca e export JSON."""
 
 from vector.models import Evidence, OrphanCandidate, ScanReport
-from vector.report import render_tree, write_json
+from vector.report import render_tree, to_report_payload, write_json
 
 
 def _report():
@@ -43,3 +43,23 @@ def test_json_export(tmp_path):
     payload = json.loads(dest.read_text(encoding="utf-8"))
     assert payload["installed_count"] == 5
     assert len(payload["candidates"]) == 2
+
+
+def test_bridge_payload_is_camelcase():
+    """to_report_payload espelha a forma camelCase que mock.js/app.js usam."""
+    payload = to_report_payload(_report())
+    assert payload["installedCount"] == 5
+    assert len(payload["candidates"]) == 2
+    folder = next(c for c in payload["candidates"] if c["kind"] == "folder")
+    # chaves camelCase exigidas pela interface
+    for key in ("sizeBytes", "sizeHuman", "ageDays", "manualCommand",
+                "confidence", "sensitive", "evidences"):
+        assert key in folder
+    assert folder["evidences"][0] == {
+        "description": "+40 ausente", "weight": 40, "source": "filesystem"}
+
+
+def test_bridge_payload_is_json_serializable():
+    import json
+
+    json.dumps(to_report_payload(_report()), ensure_ascii=False)

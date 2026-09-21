@@ -20,9 +20,11 @@ $OutDir = Join-Path $Root '.build'
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
 # Pastas inteiras embutidas (caminhos relativos a raiz do projeto).
-# FASE 2: acrescentar 'src' aqui para o exe carregar o motor Python.
+# Fase 2: 'src' carrega o motor Python (vector.bridge) dentro do exe; o
+# VectorHost.ps1 o executa via `python vector-cli.py --serve` na pasta extraida.
 $includeDirs = @(
-    'gui\vector'
+    'gui\vector',
+    'src'
 )
 
 # Arquivos soltos que o host usa direto na raiz de $Root.
@@ -30,7 +32,10 @@ $includeFiles = @(
     # gui/Vector.ico: o VectorHost.ps1 carrega como $form.Icon na abertura
     # (e o que a barra de tarefas mostra - o -iconFile do ps2exe so marca o
     # arquivo .exe no Explorer).
-    'gui\Vector.ico'
+    'gui\Vector.ico',
+    # entry-point fino: fica ao lado de src/ na pasta extraida, e o VectorHost
+    # chama `python vector-cli.py --serve` (ele mesmo insere src/ no sys.path).
+    'vector-cli.py'
 )
 
 $exclude = '__pycache__|\.pyc$|^\.probe|^\.shot|^\.dom|^\.clean-|\.verify|\.edge-err'

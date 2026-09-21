@@ -27,6 +27,12 @@ const state = {
   removed: 0,
   skipped: 0,
   awaitingConfirm: false,
+  // Fase 2 (bridge com o motor Python real):
+  engineAvailable: false, // definido pelo host em 'host-ready'
+  phase: "mock", // 'engine' | 'mock'
+  scanning: false, // varredura em andamento (aguardando scan-result)
+  scanError: "", // ultima falha de varredura, se houver
+  awaitingHost: false, // aguardando remove-result do motor
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -73,6 +79,7 @@ function go(step) {
   }
   state.step = step;
   state.awaitingConfirm = false;
+  state.awaitingHost = false;
   render();
   $("#content").scrollTop = 0;
 }
@@ -88,8 +95,24 @@ function render() {
   };
   const host = $("#content");
   host.innerHTML = "";
+  if (state.scanning) { renderScanning(host); renderNav(); return; }
   screens[state.step](host);
   renderNav();
+}
+
+function renderScanning(root) {
+  const el = document.createElement("div");
+  el.className = "screen";
+  const alvo = state.target.trim();
+  el.innerHTML =
+    '<h1 class="screen-title">Varre<span class="hl">endo</span> o sistema</h1>' +
+    '<p class="screen-lede">Cruzando Program Files, AppData, ProgramData, Temp, ' +
+    "Registro, servicos e tarefas" +
+    (alvo ? ' com o alvo "' + escapeHtml(alvo) + '"' : " (varredura completa)") +
+    '. Um momento&hellip;</p>' +
+    '<div class="scan-spinner" aria-hidden="true"></div>';
+  root.appendChild(el);
+  setStatus("varredura em andamento · o motor esta lendo o sistema");
 }
 
 function renderNav() {
@@ -100,6 +123,13 @@ function renderNav() {
   const done = state.step === "done";
   back.style.display = done ? "none" : "";
   next.style.display = done ? "none" : "";
+  if (state.scanning) {
+    back.disabled = true;
+    next.disabled = true;
+    next.textContent = "Varrendo...";
+    return;
+  }
+  next.disabled = false;
   back.disabled = idx === 0 || state.step === "clean";
   const labels = {
     welcome: "Iniciar varredura",
@@ -194,7 +224,9 @@ function renderWelcome(root) {
     "Pastas com possível dado sensível disparam alerta explícito. " +
     "PermissionError é reportado com elegância — rode como admin para cobertura total.</p></div>";
   root.appendChild(el);
-  setStatus("vector.exe · modo auditoria · dados de exemplo");
+  setStatus(state.engineAvailable
+    ? "vector.exe · motor real (src/vector) pronto"
+    : "vector.exe · modo auditoria · dados de exemplo");
 }
 
 function renderScanSetup(root) {
@@ -228,7 +260,21 @@ function renderScanSetup(root) {
 }
 
 function runScan() {
-  // Fase 1: mock. Fase 2: sendToHost("start-scan", {...}) + onBridgeMessage.
+  state.scanError = "";
+  if (isHosted() && state.engineAvailable) {
+    // Fase 2: pede ao VectorHost.ps1 para rodar engine.run_scan() e devolver
+    // o ScanReport por 'scan-result' (onBridgeMessage). A tela de progresso
+    // aparece ja que o WebView2 renderiza fora da thread de UI do host.
+    state.scanning = true;
+    render();
+    sendToHost("start-scan", {
+      target: state.target.trim() || null,
+      minConfidence: state.minConfidence,
+      verbose: state.verbose,
+    });
+    return;
+  }
+  // Fallback: preview no navegador ou motor indisponivel -> dados de exemplo.
   state.report = JSON.parse(JSON.stringify(VECTOR_MOCK));
   if (state.doneSteps.indexOf("scan") < 0) state.doneSteps.push("scan");
   go("evidence");
@@ -240,6 +286,18 @@ function runScan() {
 function renderEvidence(root) {
   const el = document.createElement("div");
   el.className = "screen screen-wide";
+
+  if (!state.report) {
+    el.innerHTML =
+      '<h1 class="screen-title">Árvore de <span class="hl">evidências</span></h1>' +
+      '<div class="ev-empty ev-error">[!] A varredura falhou no motor.' +
+      (state.scanError ? "<br/>" + escapeHtml(state.scanError) : "") +
+      "<br/>Volte e tente de novo, ou verifique se o Vector roda como admin.</div>";
+    root.appendChild(el);
+    setStatus("varredura com erro · nada foi apagado");
+    return;
+  }
+
   const items = filteredCandidates();
   const groups = ["HIGH", "MEDIUM", "LOW"].map(function (conf) {
     return {
@@ -351,7 +409,10 @@ function renderClean(root) {
     box.insertAdjacentHTML("beforeend",
       '<div class="clean-transcribe"><input type="text" id="f-transcribe" placeholder=\'Digite "' +
       expected + '" para continuar\' /></div>' +
-      (state.awaitingConfirm
+      (state.awaitingHost
+        ? '<div class="clean-confirm"><p><strong>Removendo pelo motor&hellip;</strong> ' +
+          'o Vector esta revalidando e apagando este item.</p></div>'
+        : state.awaitingConfirm
         ? '<div class="clean-confirm"><p><strong>Remoção definitiva.</strong> Tem certeza?</p>' +
           '<div class="clean-row-actions">' +
           '<button class="btn btn-danger" id="btn-confirm-yes">Sim, remover</button>' +
@@ -380,6 +441,7 @@ function renderClean(root) {
 
 function wireClean(el, current, expected) {
   if (!current) return;
+  if (state.awaitingHost) return; // aguardando remove-result: nada clicavel
   const input = $("#f-transcribe");
 
   function doSkip(reason) {
@@ -414,14 +476,39 @@ function wireClean(el, current, expected) {
 
   const yesBtn = $("#btn-confirm-yes");
   if (yesBtn) yesBtn.onclick = function () {
-    // Fase 1: simula. Fase 2: sendToHost("remove-folder", {path}) e a
-    // resposta real do VectorHost.ps1 volta pelo onBridgeMessage.
+    if (isHosted() && state.engineAvailable) {
+      // Fase 2: o motor revalida (HIGH/MEDIUM, so pasta, nao-allowlisted) e
+      // apaga. A resposta chega em onBridgeMessage -> applyRemoveResult.
+      state.awaitingHost = true;
+      render();
+      sendToHost("remove-folder", { path: current.path });
+      return;
+    }
+    // Preview no navegador / sem motor: apenas simula, nada e tocado.
     feedLine("ok", "[REMOVIDO] " + current.path + " (simulado)");
     state.removed += 1;
     state.cleanIndex += 1;
     state.awaitingConfirm = false;
     render();
   };
+}
+
+function applyRemoveResult(p) {
+  const current = state.cleanQueue[state.cleanIndex];
+  state.awaitingHost = false;
+  state.awaitingConfirm = false;
+  if (!current) { render(); return; }
+  if (p && p.removed) {
+    feedLine("ok", "[REMOVIDO] " + current.path +
+      (p.detail ? " (" + p.detail + ")" : ""));
+    state.removed += 1;
+  } else {
+    feedLine("skip", "[FALHA] " + current.path +
+      " (" + ((p && p.detail) || "nao removido") + ")");
+    state.skipped += 1;
+  }
+  state.cleanIndex += 1;
+  render();
 }
 
 /* ---------------- tela: done ---------------- */
@@ -453,11 +540,50 @@ function renderDone(root) {
 
 /* ---------------- bridge + boot ---------------- */
 
+function updatePhaseBadge() {
+  const badge = $("#titlebar-phase");
+  if (!badge) return;
+  badge.textContent = state.engineAvailable
+    ? "auditoria — motor real"
+    : "auditoria — dados de exemplo";
+}
+
 function onBridgeMessage(event) {
-  // Fase 2: o VectorHost.ps1 envia {type, payload} por aqui
-  // (scan-result, remove-result, ...). Fase 1: sem host, inalcançável.
+  // O VectorHost.ps1 envia {type, payload} por aqui. Cada tipo move a maquina
+  // de estados: host-ready define o modo; scan-result/remove-result sao as
+  // respostas as duas unicas acoes que falam com o motor real.
   const msg = event && event.data;
   if (!msg || !msg.type) return;
+  const p = msg.payload || {};
+
+  if (msg.type === "host-ready") {
+    state.engineAvailable = !!p.engineAvailable;
+    state.phase = p.phase || (state.engineAvailable ? "engine" : "mock");
+    updatePhaseBadge();
+    if (state.step === "welcome") render();
+    return;
+  }
+  if (msg.type === "scan-result") {
+    state.scanning = false;
+    state.scanError = "";
+    state.report = p;
+    if (state.doneSteps.indexOf("scan") < 0) state.doneSteps.push("scan");
+    go("evidence");
+    return;
+  }
+  if (msg.type === "scan-error") {
+    state.scanning = false;
+    state.scanError = p.error || "falha desconhecida na varredura";
+    state.report = null;
+    go("evidence");
+    return;
+  }
+  if (msg.type === "remove-result") {
+    applyRemoveResult(p);
+    return;
+  }
+  // 'not-implemented' / 'bridge-error' de versoes antigas do host: ignora com
+  // seguranca (a interface segue em mock).
 }
 
 if (isHosted()) {

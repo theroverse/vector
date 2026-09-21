@@ -120,3 +120,35 @@ def write_json(report: ScanReport, destination: Path) -> Path:
     destination.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
                            encoding="utf-8")
     return destination
+
+
+def to_report_payload(report: ScanReport) -> dict:
+    """Serializa o relatorio na forma camelCase que a GUI (mock.js/app.js) ja
+    espera. Adaptador na fronteira do bridge: o `--json` da CLI mantem o shape
+    snake_case (contrato Orbit/automacao); aqui e a view da interface."""
+    return {
+        "target": report.target,
+        "installedCount": report.installed_count,
+        "rootsScanned": list(report.roots_scanned),
+        "accessDenied": list(report.access_denied),
+        "warnings": list(report.warnings),
+        "candidates": [
+            {
+                "kind": c.kind,
+                "path": c.path,
+                "label": c.label,
+                "score": c.score,
+                "confidence": c.confidence,
+                "sensitive": c.sensitive,
+                "sizeBytes": c.size_bytes,
+                "sizeHuman": format_size(c.size_bytes),
+                "ageDays": c.age_days,
+                "manualCommand": c.manual_command,
+                "evidences": [
+                    {"description": e.description, "weight": e.weight,
+                     "source": e.source} for e in c.evidences
+                ],
+            }
+            for c in report.candidates
+        ],
+    }

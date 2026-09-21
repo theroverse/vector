@@ -53,6 +53,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Modo auditoria textual (padrao).")
     parser.add_argument("--clean", action="store_true",
                         help="Modo limpeza interativa com confirmacao.")
+    parser.add_argument("--serve", action="store_true",
+                        help=argparse.SUPPRESS)  # bridge JSON-lines p/ VectorHost.ps1
     parser.add_argument("--target", default=None, metavar="NOME",
                         help="Investiga so um programa (comparacao aproximada).")
     parser.add_argument("--min-confidence", default="LOW", metavar="NIVEL",
@@ -70,6 +72,14 @@ def main() -> None:
     from vector.report import render_tree, write_json
 
     args = parse_args()
+
+    if args.serve:
+        # Modo servidor da GUI (fase 2): le pedidos JSON por stdin, responde
+        # na stdout. Todo o guard de seguranca mora em vector.bridge.
+        from vector.bridge import serve
+
+        serve()
+        return
 
     if args.scan and args.clean:
         print("[ERROR] Use --scan ou --clean, nunca os dois juntos.")

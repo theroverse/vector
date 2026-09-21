@@ -532,3 +532,26 @@ html, body {
   .done-stats { flex-direction: column; }
 }
 
+/* Fase 2 — feedback de varredura/erro (motor real via bridge) */
+.ev-error {
+  border-color: rgba(248, 113, 122, 0.4);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  text-align: left;
+}
+.scan-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 26px auto 0;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--primary);
+  animation: vector-spin 0.8s linear infinite;
+}
+@keyframes vector-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-spinner { animation: none; border-top-color: var(--accent); }
+}
+

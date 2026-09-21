@@ -53,14 +53,17 @@ python vector-cli.py --clean --target Notion      # limpeza interativa
 - `PermissionError` e tratado com elegancia: o item entra na lista
   de `access_denied` com dica de rodar como admin.
 
-## GUI (fase 1 — dados de exemplo)
+## GUI (fase 2 — motor real via bridge)
 
 A interface roda em uma janela WebView2 borderless (mesma arquitetura do
-Genesis), com dados de exemplo ate a fase 2 ligar o motor Python real.
+Genesis) e esta ligada ao motor Python real: `VectorHost.ps1` mantem um
+processo `python vector-cli.py --serve` (JSON-lines) e encaminha varredura e
+remocao para `src/vector/`. Sem Python no PATH, a janela cai em modo mock
+(`mock.js`) e nada quebra. O preview no navegador segue 100% mock.
 
 ```powershell
 gui\vector\dev.cmd          # preview no navegador (modo mock)
-gui\VectorHost.ps1          # janela real (WebView2, pede admin)
+gui\VectorHost.ps1          # janela real (WebView2 + motor, pede admin)
 .\build.ps1                 # compila dist\Vector.exe (arquivo unico)
 ```
 
@@ -70,14 +73,19 @@ sensivel, comandos manuais para registro/servico/tarefa) → limpeza
 interativa (digite `REMOVER <n>` + confirme; Enter sempre pula) → resumo
 com log. O botao fechar confirma antes de sair.
 
+> Seguranca no bridge: a digitacao/confirmacao da GUI e UX; o gate real e o
+> Python. O comando `remove` so apaga um caminho que o PROPRIO motor pontuou
+> como cleanable (HIGH/MEDIUM, tipo pasta, nao-allowlisted) na ultima
+> varredura em memoria — pedir para remover `C:\Windows` e recusado.
+
 ## Build (padrao Genesis)
 
-`build.ps1` gera o payload (zip → gzip → base64 de `gui/vector/` +
-`gui/Vector.ico`), monta o script unico e compila com ps2exe.
-Na fase 2, acrescentar `'src'` em `scripts/build-payload.ps1` embute o
-motor Python. O exe extrai em `%LOCALAPPDATA%\Vector\app\<versao>` na
-primeira execucao (sentinela: `gui\vector\app.js`) e guarda dados/cache
-do WebView2 em `%LOCALAPPDATA%\Vector\WebView2`.
+`build.ps1` gera o payload (zip → gzip → base64 de `gui/vector/` + `src/` +
+`vector-cli.py` + `gui/Vector.ico`), monta o script unico e compila com
+ps2exe — o motor Python vai junto. O exe extrai em
+`%LOCALAPPDATA%\Vector\app\<versao>` na primeira execucao (sentinela:
+`gui\vector\app.js`) e guarda dados/cache do WebView2 em
+`%LOCALAPPDATA%\Vector\WebView2`.
 
 ## Identidade
 

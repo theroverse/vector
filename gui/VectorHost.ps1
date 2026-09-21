@@ -214,6 +214,9 @@ $webView.CreationProperties = $creationProps
 
 $form.Controls.Add($webView)
 $form.Add_Shown({ [NativeDrag]::RoundCorners($form.Handle) })
+# Rede de seguranca: qualquer caminho que feche a janela (nao so o botao da
+# titlebar) derruba o processo Python filho, senao ele ficaria zoombie.
+$form.Add_FormClosed({ Stop-Engine })
 
 
 # ------------------------------------------------------------------ bridge --
@@ -231,17 +234,100 @@ function Send-ToJs {
     $webView.CoreWebView2.PostWebMessageAsJson($msg)
 }
 
+# ------------------------------------------------------------------ engine --
+<#
+    Fase 2: um processo Python filho, PERSISTENTE, falando JSON-lines por
+    stdin/stdout (`python vector-cli.py --serve`). O guard de seguranca
+    (allowlist, LOW nunca, so pastas, revalidacao contra o relatorio em
+    memoria) mora TODO no Python (src/vector/bridge.py) - aqui apenas
+    encaminhamos o pedido e devolvemos a resposta, sem reimplementar regra.
+
+    Pedido/resposta sao 1:1 e sincronos: escrevemos uma linha, lemos uma.
+    Uma varredura dura poucos segundos e congela a janela nesse intervalo -
+    aceitavel para uma ferramenta de um usuario so, e evita a classe inteira
+    de bugs de deadlock/Invoke de um runspace de fundo.
+
+    Sem Python no PATH a janela sobe em modo mock e o JS segue com mock.js.
+#>
+$script:Engine = $null  # @{ Proc; Stdin; Stdout } quando vivo
+
+function Resolve-EnginePython {
+    foreach ($c in @(
+        @{ Exe = 'py';      Prefix = @('-3') },
+        @{ Exe = 'python';  Prefix = @() },
+        @{ Exe = 'python3'; Prefix = @() })) {
+        if (Get-Command $c.Exe -ErrorAction SilentlyContinue) { return $c }
+    }
+    return $null
+}
+
+function Start-Engine {
+    if ($script:Engine -and -not $script:Engine.Proc.HasExited) { return $true }
+    $py = Resolve-EnginePython
+    if (-not $py) { return $false }
+    $cli = Join-Path $Root 'vector-cli.py'
+    if (-not (Test-Path $cli)) { return $false }
+
+    $argList = @($py.Prefix) + @($cli, '--serve')
+    $quoted = $argList | ForEach-Object {
+        if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+    }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $py.Exe
+    $psi.Arguments = ($quoted -join ' ')
+    $psi.WorkingDirectory = $Root
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $false
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+    } catch {
+        return $false
+    }
+    $script:Engine = @{ Proc = $proc; Stdin = $proc.StandardInput; Stdout = $proc.StandardOutput }
+    return $true
+}
+
+function Invoke-Engine {
+    param([hashtable]$Request)
+    if (-not (Start-Engine)) { throw 'Motor Python indisponivel (sem Python no PATH?).' }
+    $json = $Request | ConvertTo-Json -Compress -Depth 6
+    $script:Engine.Stdin.WriteLine($json)
+    $script:Engine.Stdin.Flush()
+    $line = $script:Engine.Stdout.ReadLine()
+    if ($null -eq $line) { throw 'O motor encerrou a conexao; reabra o Vector.' }
+    return ($line | ConvertFrom-Json)
+}
+
+function Stop-Engine {
+    if ($script:Engine) {
+        try { $script:Engine.Stdin.Close() } catch { }
+        try { if (-not $script:Engine.Proc.HasExited) { $script:Engine.Proc.Kill() } } catch { }
+        $script:Engine = $null
+    }
+}
+
 function Handle-Message {
     param($Msg)
 
     switch ($Msg.type) {
         'ready' {
-            # A interface avisou que carregou; confirma o host e o modo.
+            # A interface avisou que carregou: levanta o motor Python (se
+            # houver) e confirma o modo. engine=false -> a GUI segue em mock.
+            $engineOk = [bool](Start-Engine)
             Send-ToJs -Type 'host-ready' -Payload @{
-                app = 'vector'
-                phase = 'mock'
-                root = $Root
-                notice = 'Fase 1: dados de exemplo. O motor real (src/vector) e ligado na fase 2.'
+                app             = 'vector'
+                phase           = $(if ($engineOk) { 'engine' } else { 'mock' })
+                root            = $Root
+                engineAvailable = $engineOk
+                notice          = $(if ($engineOk) {
+                    'Motor real ligado (src/vector).'
+                } else {
+                    'Python nao encontrado no PATH: a interface vai usar dados de exemplo.'
+                })
             }
         }
         'window-close' {
@@ -252,6 +338,7 @@ function Handle-Message {
                     'YesNo', 'Question')
                 if ($result -ne [System.Windows.Forms.DialogResult]::Yes) { return }
             }
+            Stop-Engine
             $form.Close()
         }
         'window-minimize' { $form.WindowState = 'Minimized' }
@@ -260,24 +347,42 @@ function Handle-Message {
             [NativeDrag]::SendMessage($form.Handle, [NativeDrag]::WM_NCLBUTTONDOWN, [NativeDrag]::HTCAPTION, 0) | Out-Null
         }
         'start-scan' {
-            # FASE 2: chamar o motor Python real (src/vector/engine.py,
-            # run_scan) num runspace de fundo e empurrar o ScanReport por
-            # 'scan-result'. Hoje responde com clareza que ainda nao esta
-            # ligado - a interface usa os dados de exemplo (mock.js).
-            Send-ToJs -Type 'not-implemented' -Payload @{
-                command = 'start-scan'
-                reason = 'Fase 2: o motor real (src/vector/engine.py) ainda nao esta ligado nesta janela.'
-                fallback = 'mock'
+            # Encaminha ao motor; a resposta (ScanReport camelCase) volta por
+            # 'scan-result'. Todo o calculo/confianca acontece no Python.
+            try {
+                $req = @{ cmd = 'scan' }
+                if ($Msg.payload -and $Msg.payload.target) {
+                    $req.target = [string]$Msg.payload.target
+                }
+                $resp = Invoke-Engine -Request $req
+                if ($resp.ok) {
+                    Send-ToJs -Type 'scan-result' -Payload $resp.result
+                } else {
+                    Send-ToJs -Type 'scan-error' -Payload @{ error = $resp.error }
+                }
+            } catch {
+                Send-ToJs -Type 'scan-error' -Payload @{
+                    error = "Motor indisponivel: $($_.Exception.Message)" }
             }
         }
         'remove-folder' {
-            # FASE 2: mesma trilha de remocao do vector-cli.py --clean
-            # (digitacao literal + confirmacao, allowlist, sem registro/
-            # servico/tarefa). NUNCA remover sem o mesmo guard do CLI.
-            Send-ToJs -Type 'not-implemented' -Payload @{
-                command = 'remove-folder'
-                reason = 'Fase 2: a remocao real exige o guard do vector-cli.py --clean.'
-                fallback = 'mock'
+            # O motor revalida contra o relatorio em memoria (HIGH/MEDIUM,
+            # so pasta, nao-allowlisted) ANTES de apagar. Se recusar, devolve
+            # removed=false com o motivo - nunca removemos no PowerShell.
+            $path = ''
+            if ($Msg.payload -and $Msg.payload.path) { $path = [string]$Msg.payload.path }
+            try {
+                $resp = Invoke-Engine -Request @{ cmd = 'remove'; path = $path }
+                if ($resp.ok) {
+                    Send-ToJs -Type 'remove-result' -Payload $resp.result
+                } else {
+                    Send-ToJs -Type 'remove-result' -Payload @{
+                        removed = $false; path = $path; detail = $resp.error }
+                }
+            } catch {
+                Send-ToJs -Type 'remove-result' -Payload @{
+                    removed = $false; path = $path
+                    detail = "Motor indisponivel: $($_.Exception.Message)" }
             }
         }
         default {
