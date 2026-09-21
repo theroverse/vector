@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Vector: mira cirurgica + corte. Magenta cirurgico #EC4899,
+       rosa plasma #F9A8D4, fundo escuro #14060f. -->
+  <circle cx="32" cy="32" r="26" fill="#EC4899" fill-opacity="0.12"
+          stroke="#EC4899" stroke-width="3.5"/>
+  <circle cx="32" cy="32" r="14" fill="none" stroke="#F9A8D4"
+          stroke-width="2.5" stroke-dasharray="5 4" stroke-opacity="0.9"/>
+  <path d="M32 6 V18 M32 46 V58 M6 32 H18 M46 32 H58" stroke="#EC4899"
+        stroke-width="3" stroke-linecap="round"/>
+  <path d="M22 42 L42 22" stroke="#F9A8D4" stroke-width="3.5"
+        stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="3.5" fill="#14060f" stroke="#EC4899"
+          stroke-width="2.5"/>
+</svg>

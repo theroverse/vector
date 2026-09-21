@@ -1,0 +1,10 @@
+# Vector - limpeza cirurgica de residuos de programas
+dist/
+.build/
+gui/Vector.ico
+gui/vector/.shot-*
+*.pyc
+__pycache__/
+.pytest_cache/
+.vector/
+relatorio*.json
