@@ -112,3 +112,95 @@ def test_inspect_corrupt_file(tmp_path):
 def test_root_uses_localappdata_at_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert quarantine.root() == tmp_path / "Vector" / "quarantine"
+
+
+# ---------------- restore / export / purge (semantica ativo vs externo) ----- 
+
+def _sealed_one(tmp_path, folder, name="Só"):
+    base = tmp_path / "q"
+    d = folder(name)
+    entry, _ = quarantine.stage(_cand(d, label=name), base=base)
+    quarantine.seal(base=base)
+    return base, entry, d
+
+
+def test_restore_one_active_moves_back_and_shrinks(tmp_path, folder):
+    base = tmp_path / "q"
+    d1, d2 = folder("Um"), folder("Dois")
+    quarantine.stage(_cand(d1, label="Um"), base=base)
+    quarantine.stage(_cand(d2, label="Dois"), base=base)
+    info = quarantine.seal(base=base)
+    first = next(i for i in info["items"] if i["label"] == "Um")
+    ok, detail = quarantine.restore_one(first["id"], base=base)
+    assert ok and detail == str(d1) and (d1 / "a.txt").exists()
+    left = quarantine.inspect(base=base)
+    assert [i["label"] for i in left["items"]] == ["Dois"]
+
+
+def test_restore_last_item_removes_vec(tmp_path, folder):
+    base, entry, d = _sealed_one(tmp_path, folder)
+    ok, _ = quarantine.restore_one(entry["id"], base=base)
+    assert ok and d.exists() and not (base / "last.vec").exists()
+    assert quarantine.inspect(base=base) is None
+
+
+def test_restore_one_skips_when_destination_exists(tmp_path, folder):
+    base, entry, d = _sealed_one(tmp_path, folder, name="Volta")
+    d.mkdir(parents=True, exist_ok=True)          # alguem recriou a origem
+    ok, err = quarantine.restore_one(entry["id"], base=base)
+    assert not ok and "já existe" in err
+    assert len(quarantine.inspect(base=base)["items"]) == 1  # nada enxugado
+
+
+def test_restore_external_copies_and_preserves(tmp_path, folder):
+    base, entry, d = _sealed_one(tmp_path, folder, name="X")
+    copy = tmp_path / "copia.vec"
+    shutil.copyfile(base / "last.vec", copy)
+    # stage() ja moveu a origem - nada existe em src/X, condicao de restaurar
+    item = quarantine.inspect(path=copy, base=base)["items"][0]
+    ok, original = quarantine.restore_one(item["id"], path=copy, base=base)
+    assert ok and Path(original).exists()
+    # backup externo permanece com a entrada (e backup, nao lixeira)
+    assert len(quarantine.inspect(path=copy, base=base)["items"]) == 1
+
+
+def test_restore_unknown_id_and_missing_file(tmp_path, folder):
+    base, entry, _ = _sealed_one(tmp_path, folder)
+    ok, err = quarantine.restore_one("nao-existe", base=base)
+    assert not ok and "nao esta neste backup" in err
+    ok, _ = quarantine.restore_one("x", path=tmp_path / "fantasma.vec", base=base)
+    assert not ok
+
+
+def test_restore_preserves_subfolders(tmp_path, folder):
+    base = tmp_path / "q"
+    d = tmp_path / "src" / "Recursivo"
+    (d / "sub" / "fundo").mkdir(parents=True)
+    (d / "a.txt").write_text("A", encoding="utf-8")
+    (d / "sub" / "fundo" / "b.txt").write_text("B", encoding="utf-8")
+    entry, _ = quarantine.stage(_cand(d), base=base)
+    quarantine.seal(base=base)
+    ok, _ = quarantine.restore_one(entry["id"], base=base)
+    assert ok
+    assert (d / "sub" / "fundo" / "b.txt").read_text(encoding="utf-8") == "B"
+
+
+def test_export_copies_active(tmp_path, folder):
+    base, _, _ = _sealed_one(tmp_path, folder)
+    dest = tmp_path / "out" / "meu-backup.vec"
+    ok, detail = quarantine.export(dest, base=base)
+    assert ok and dest.exists() and detail == str(dest)
+    assert (base / "last.vec").exists()           # original preservado
+
+
+def test_purge_deletes_active(tmp_path, folder):
+    base, _, _ = _sealed_one(tmp_path, folder)
+    assert quarantine.purge(base=base) is True
+    assert not (base / "last.vec").exists()
+    assert quarantine.purge(base=base) is False    # idempotente
+
+
+def test_export_without_backup_returns_reason(tmp_path):
+    ok, err = quarantine.export(tmp_path / "x.vec", base=tmp_path / "q")
+    assert not ok and "nao ha backup ativo" in err
+

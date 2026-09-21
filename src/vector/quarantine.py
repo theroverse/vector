@@ -23,7 +23,7 @@ import shutil
 import time
 import uuid
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from vector.models import OrphanCandidate
@@ -115,7 +115,9 @@ def seal(base: Optional[Path] = None) -> Optional[dict]:
             for entry, folder in staged:
                 for f in sorted((folder / entry["archived"]).rglob("*")):
                     if f.is_file():
-                        zf.write(f, f.relative_to(folder).as_posix())
+                        # prefixo <id>/ isola itens de mesmo nome no zip
+                        rel = f.relative_to(folder).as_posix()
+                        zf.write(f, f"{entry['id']}/{rel}")
             zf.writestr(MANIFEST_NAME, _entry_json(
                 {"sealed_ts": int(time.time()), "items": entries}))
         if target.exists():
@@ -167,3 +169,90 @@ def inspect(path: Optional[Path] = None,
         "totalBytes": sum(i.get("sizeBytes", 0) for i in manifest["items"]),
         "items": manifest["items"],
     }
+
+
+def _rewrite_without(target: Path, drop_id: str, sealed_ts: int) -> None:
+    """Reescreve o .vec sem as entradas de drop_id; apaga o arquivo se esvaziou."""
+    with zipfile.ZipFile(target) as zf:
+        manifest = json.loads(zf.read(MANIFEST_NAME))
+    items = [i for i in manifest["items"] if i["id"] != drop_id]
+    if not items:
+        target.unlink(missing_ok=True)
+        return
+    tmp = target.with_name(target.name + ".tmp")
+    prefix = drop_id + "/"
+    with zipfile.ZipFile(target) as src, \
+            zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:
+        for name in src.namelist():
+            if name == MANIFEST_NAME or name.startswith(prefix):
+                continue
+            dst.writestr(name, src.read(name))
+        dst.writestr(MANIFEST_NAME, _entry_json(
+            {"sealed_ts": sealed_ts, "items": items}))
+    target.unlink()
+    tmp.replace(target)
+
+
+def restore_one(entry_id: str, path: Optional[Path] = None,
+                base: Optional[Path] = None) -> tuple[bool, str]:
+    """Restaura UMA pasta do .vec. Ativo (path=None): move de volta e enxuga a
+    entrada. Externo: copia e o backup permanece intacto (e um backup, nao
+    uma lixeira). (ok, caminho_original | motivo)."""
+    target = Path(path) if path else active_path(base)
+    active = path is None
+    if not target.exists():
+        return False, "o backup nao existe mais."
+    manifest = _read_vec(target)
+    if manifest is None:
+        return False, "arquivo de backup corrompido ou ilegível."
+    entry = next((i for i in manifest["items"] if i["id"] == entry_id), None)
+    if entry is None:
+        return False, f"item {entry_id} nao esta neste backup."
+    original = Path(entry["original"])
+    if original.exists():
+        return False, f"já existe algo em {original}; nada foi restaurado."
+    prefix = f"{entry_id}/{entry['archived']}"
+    try:
+        with zipfile.ZipFile(target) as zf:
+            names = [n for n in zf.namelist() if n.startswith(prefix)]
+            original.mkdir(parents=True, exist_ok=True)
+            for name in names:
+                rel = name[len(prefix):].lstrip("/")
+                if not rel:
+                    continue  # entrada de diretorio raiz, ja criada
+                dest = original / Path(*PurePosixPath(rel).parts)
+                if name.endswith("/"):
+                    dest.mkdir(parents=True, exist_ok=True)
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(name) as src_f, open(dest, "wb") as out_f:
+                    shutil.copyfileobj(src_f, out_f)
+    except OSError as exc:
+        return False, f"falha ao restaurar: {exc}"
+    if active:
+        _rewrite_without(target, entry_id, manifest.get("sealed_ts", 0))
+    return True, str(original)
+
+
+def export(dest: Path, path: Optional[Path] = None,
+           base: Optional[Path] = None) -> tuple[bool, str]:
+    """Copia o backup (ativo por omissao) para dest, sem esvaziar nada."""
+    src = Path(path) if path else active_path(base)
+    if not src.exists():
+        return False, "nao ha backup ativo para copiar."
+    dest = Path(dest)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+    except OSError as exc:
+        return False, f"falha ao copiar o backup: {exc}"
+    return True, str(dest)
+
+
+def purge(base: Optional[Path] = None) -> bool:
+    """Apaga o backup ATIVO (hard delete - unico ponto sem volta da GUI)."""
+    target = active_path(base)
+    existed = target.exists()
+    target.unlink(missing_ok=True)
+    shutil.rmtree(root(base) / _STAGING, ignore_errors=True)
+    return existed
