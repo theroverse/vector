@@ -39,14 +39,16 @@ WebView com **dois caminhos**:
    próprio botão; desabilitado com explicação quando não há backup.
 2. **"Outro arquivo…"** — só então aparece o formulário: zona de drag &
    drop + botão "Selecionar arquivo…" (OpenFileDialog nativo via host).
-   Drop tem **fallback híbrido**: se `File.path` vier preenchido (padrão
-   do WebView2 hoje), o caminho vai direto ao motor; se vier vazio, a
-   página lê o **conteúdo** do File (FileReader), envia ao host, que
-   grava em `%TEMP%\vector-drop-<uuid>.vec` e o fluxo segue identico a
-   partir dai — o usuario nao ve diferenca. Limitacao pratica do
-   fallback por conteudo: backups muito grandes (centenas de MB) ficam
-   lentos na travessia JS→PS; o seletor nativo segue instantaneo em
-   qualquer tamanho.
+   Drop tem **fallback híbrido com trava**: se `File.path` vier preenchido
+   (padrão do WebView2 hoje), o caminho vai direto ao motor; se vier
+   vazio E o arquivo couber em 20 MB, a página lê o **conteúdo** do File
+   (FileReader), envia ao host, que grava em
+   `%TEMP%\vector-drop-<uuid>.vec` e o fluxo segue identico a partir dai —
+   o usuario nao ve diferenca. **Trava**: sem `.path` E arquivo > 20 MB, o
+   drop é recusado com aviso "arquivos acima de 20 MB não podem ser
+   arrastados — selecione o arquivo"; ao fechar o aviso, o OpenFileDialog
+   nativo **abre automaticamente**, e a seleção ali recupera o caminho
+   real sem limite de tamanho.
 
 O caminho escolhido vai ao engine (`backup-inspect`) e leva à **tela de
 Restauração**.
