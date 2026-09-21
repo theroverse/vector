@@ -58,16 +58,22 @@ function escapeHtml(s) {
 
 function renderSidebar() {
   const order = STEPS.map(function (s) { return s.id; });
-  const currentIdx = order.indexOf(state.step);
-  $("#sidebar").innerHTML = '<div class="side-group">' +
-    '<div class="side-group-title">Vector</div>' +
-    STEPS.map(function (s, i) {
-      const cls = (i < currentIdx || state.doneSteps.indexOf(s.id) >= 0)
-        ? "side-item is-done"
-        : (i === currentIdx ? "side-item is-current" : "side-item is-locked");
-      return '<div class="' + cls + '"><span class="dot"></span><span>' +
-        s.label + "</span></div>";
-    }).join("") + "</div>";
+  const currentIdx = state.utility ? -1 : order.indexOf(state.step);
+  const item = function (id, label, i) {
+    const cls = (i >= 0 && (i < currentIdx || state.doneSteps.indexOf(id) >= 0)) ? " is-done"
+      : (i === currentIdx || state.utility === id) ? " is-current"
+      : (i > currentIdx && currentIdx >= 0) ? " is-locked" : "";
+    return '<div class="side-item' + cls + '" data-step="' + id + '"><span class="dot"></span><span>' +
+      label + "</span></div>";
+  };
+  $("#sidebar").innerHTML =
+    '<div class="side-group"><div class="side-group-title">Vector</div>' +
+    STEPS.map(function (s, i) { return item(s.id, s.label, i); }).join("") + "</div>" +
+    '<div class="side-group"><div class="side-group-title">Backup</div>' +
+    '<div class="side-item' + (state.utility === "quarantine" ? " is-current" : "") +
+    '" data-util="quarantine"><span class="dot"></span><span>Quarentena</span></div>' +
+    '<div class="side-item" data-util="pick"><span class="dot"></span><span>Restaurar backup…</span></div>' +
+    "</div>";
 }
 
 function setStatus(text) {
@@ -649,6 +655,19 @@ function onBridgeMessage(event) {
     return;
   }
   if (msg.type === "engine-reply") { onEngineReply(p); return; }
+  if (msg.type === "backup-picked") {
+    if (p.path) inspectBackup(p.path);   // cancelado -> path null, fica onde estava
+    return;
+  }
+  if (msg.type === "open-backup") {
+    inspectBackup(p.path);   // duplo-clique num .vec => cai direto na restauracao
+    return;
+  }
+  if (msg.type === "backup-exported") {
+    showNotice(p.ok ? "Cópia do backup salva em:\n" + p.detail
+                    : "Não deu para salvar a cópia: " + (p.detail || p.error || "cancelado"), null);
+    return;
+  }
   // 'not-implemented' / 'bridge-error' de versoes antigas do host: ignora com
   // seguranca (a interface segue em mock).
 }
@@ -660,14 +679,304 @@ function engineCall(cmd, args) {
   sendToHost("engine-call", req);
 }
 
-// Implementado na Task 7 (roteamento por replyIntent); stub para nao
-// quebrar o boot enquanto a quarentena nao existe na GUI.
-function onEngineReply() {}
+// Roteia as respostas dos comandos de quarentena/backup conforme a intencao
+// que originou o pedido (state.replyIntent) - um so canal para sete comandos.
+function onEngineReply(p) {
+  const r = p.result || {};
+  if (p.cmd === "quarantine-seal") {
+    if (state.exec) state.exec.sealed = r;
+    go("done");
+    return;
+  }
+  if (p.cmd === "quarantine-inspect" || p.cmd === "backup-inspect") {
+    state.backup = r.file ? r : null;
+    state.backupSel = {};
+    if (r.corrupt) {
+      showNotice("Este arquivo não é um backup do Vector válido (ou está corrompido).", null);
+      state.replyIntent = null;
+      render();
+      return;
+    }
+    if (state.replyIntent === "picker") {
+      state.replyIntent = null;
+      showPicker(state.backup);       // modal decide o proximo passo
+      return;
+    }
+    if (state.replyIntent === "restore") state.utility = "restore";
+    else if (state.replyIntent === "quarantine") state.utility = "quarantine";
+    state.replyIntent = null;
+    render();
+    return;
+  }
+  if (p.cmd === "quarantine-restore" || p.cmd === "backup-restore") {
+    advanceRestore(p.ok ? r : { restored: false, detail: p.error });
+    return;
+  }
+  if (p.cmd === "quarantine-purge") {
+    state.backup = null;
+    render();
+    return;
+  }
+}
 
-// Task 7 substitui os tres stubs abaixo pelas telas/entradas reais.
-function renderQuarantine(root) { root.appendChild(document.createTextNode("quarentena: em construcao")); }
-function renderRestore(root) { root.appendChild(document.createTextNode("restauracao: em construcao")); }
-function openQuarantine() {}
+/* ---------------- quarentena / restauracao ---------------- */
+
+function inspectBackup(path) { engineCall("backup-inspect", { path: path }); }
+
+function openQuarantine() {
+  state.replyIntent = "quarantine";
+  state.exec = null;
+  engineCall("quarantine-inspect");
+  state.utility = "quarantine";
+  render();   // tela assume "carregando..." ate o engine-reply
+}
+
+function openBackupPicker() {
+  state.replyIntent = "picker";
+  engineCall("quarantine-inspect");   // data/tamanho no botao primario do modal
+}
+
+function renderQuarantine(root) {
+  if (!state.engineAvailable) {
+    root.appendChild(noticePanel("A quarentena precisa do motor real (Python). " +
+      "Sem ele a interface roda com dados de exemplo."));
+    return;
+  }
+  if (!state.backup && !state.replyIntent) {
+    root.appendChild(noticePanel("Quarentena vazia — rode uma limpeza primeiro."));
+    return;
+  }
+  if (!state.backup) { root.appendChild(noticePanel("Carregando…")); return; }
+  renderBackupView(root, {
+    title: "Quar<span class=\"hl\">entena</span>",
+    lede: "Última execução, guardada em <code>last.vec</code>. Restaurar devolve " +
+          "cada pasta ao lugar de origem e tira do backup.",
+    purge: true,
+  });
+}
+
+function renderRestore(root) {
+  if (!state.backup) { root.appendChild(noticePanel("Selecione um arquivo de backup.")); return; }
+  renderBackupView(root, {
+    title: "Restau<span class=\"hl\">ração</span>",
+    lede: "Abrindo <code>" + escapeHtml(state.backup.file.split("\\").pop()) + "</code>. " +
+      (state.backup.external
+        ? "Este é um arquivo externo: restaurar <b>copia</b> as pastas de volta e o backup permanece intacto."
+        : "Backup ativo: restaurar <b>move</b> de volta e enxuga o arquivo."),
+    purge: false,
+  });
+}
+
+function noticePanel(text) {
+  const el = document.createElement("div");
+  el.className = "screen";
+  el.innerHTML = '<div class="panel"><p class="panel-sub">' + text + "</p></div>";
+  return el;
+}
+
+// Uma tela para as duas telas (quarentena e restauracao): mesmos grupos,
+// mesmas regras - o que muda e movido vs copiado (semantica no motor).
+function renderBackupView(root, opts) {
+  const b = state.backup;
+  const running = state.exec && state.exec.running;
+  const el = document.createElement("div");
+  el.className = "screen screen-wide";
+  const done = b.sealedTs ? new Date(b.sealedTs * 1000).toLocaleString("pt-BR") : "—";
+  el.innerHTML =
+    '<h1 class="screen-title">' + opts.title + "</h1>" +
+    '<p class="screen-lede">' + opts.lede + "</p>" +
+    '<p class="bk-meta-line">' + b.items.length + " item(ns) · backup de " + done +
+    " · arquivo " + fmtBytes(b.fileBytes) + "</p>";
+  if (running) {
+    el.innerHTML += '<div class="feed" id="feed">' + state.exec.lines.map(function (l) {
+      return '<div class="feed-line feed-' + l.kind + '">' +
+        (l.kind === "ok" ? "✓ " : "✗ ") + escapeHtml(l.text) + "</div>";
+    }).join("") + "</div>";
+  } else {
+    b.items.forEach(function (it) {
+      const row = document.createElement("label");
+      row.className = "bk-row";
+      row.innerHTML =
+        '<input type="checkbox" class="bk-check" data-id="' + escapeHtml(it.id) + '"' +
+        (state.backupSel[it.id] ? " checked" : "") + " />" +
+        '<span class="bk-main"><span class="bk-name">' + escapeHtml(it.label) +
+        ' <span class="conf conf-' + (it.confidence || "low").toLowerCase() + '">' +
+        (it.confidence || "?") + "</span></span>" +
+        '<span class="bk-path">' + escapeHtml(it.original) + "</span>" +
+        '<span class="bk-why">' + escapeHtml(it.summaryPlain || "") + " · " +
+        fmtBytes(it.sizeBytes) + "</span></span>";
+      el.appendChild(row);
+    });
+    const foot = document.createElement("div");
+    foot.className = "bk-foot";
+    const n = Object.keys(state.backupSel).length;
+    foot.innerHTML =
+      '<button class="btn btn-ghost" id="btn-bk-all">Marcar todos</button>' +
+      '<span class="bk-tally">' + n + " selecionado(s)</span>" +
+      '<button class="btn btn-primary" id="btn-bk-restore"' + (n ? "" : " disabled") + ">Restaurar selecionados</button>" +
+      (opts.purge ? '<button class="btn btn-danger" id="btn-bk-purge">Esvaziar quarentena…</button>' : "");
+    el.appendChild(foot);
+  }
+  root.appendChild(el);
+  if (!running) wireBackupView(el, opts);
+  setStatus(running ? "restauração em andamento" : "quarentena");
+}
+
+function wireBackupView(el, opts) {
+  el.querySelectorAll(".bk-check[data-id]").forEach(function (chk) {
+    chk.addEventListener("change", function () {
+      if (chk.checked) state.backupSel[chk.dataset.id] = true;
+      else delete state.backupSel[chk.dataset.id];
+      const btn = el.querySelector("#btn-bk-restore");
+      if (btn) btn.disabled = !Object.keys(state.backupSel).length;
+      const tally = el.querySelector(".bk-tally");
+      if (tally) tally.textContent = Object.keys(state.backupSel).length + " selecionado(s)";
+    });
+  });
+  el.querySelector("#btn-bk-all").onclick = function () {
+    state.backup.items.forEach(function (it) { state.backupSel[it.id] = true; });
+    render();
+  };
+  el.querySelector("#btn-bk-restore").onclick = startRestore;
+  const purge = el.querySelector("#btn-bk-purge");
+  if (purge) {
+    purge.onclick = function () {
+      if (purge.dataset.armed) { engineCall("quarantine-purge"); return; }
+      purge.dataset.armed = "1";
+      purge.textContent = "Clique de novo para APAGAR o backup";
+    };
+  }
+}
+
+function startRestore() {
+  const items = state.backup.items.filter(function (i) { return state.backupSel[i.id]; });
+  state.exec = { queue: items, i: 0, ok: 0, fail: 0, lines: [], running: true,
+                 external: !!state.backup.external };
+  restorePump();
+}
+
+function restorePump() {
+  const ex = state.exec;
+  if (!ex || ex.i >= ex.queue.length) {
+    if (ex) ex.running = false;
+    state.backupSel = {};
+    if (state.utility === "quarantine") openQuarantine();   // re-inspeciona o que sobrou
+    else render();
+    return;
+  }
+  render();
+  const it = ex.queue[ex.i];
+  if (state.backup && state.backup.external) engineCall("backup-restore", { path: state.backup.file, id: it.id });
+  else engineCall("quarantine-restore", { id: it.id });
+}
+
+function advanceRestore(r) {
+  const ex = state.exec;
+  if (!ex) return;
+  if (r.restored) { ex.ok++; ex.lines.push({ kind: "ok", text: r.detail }); }
+  else { ex.fail++; ex.lines.push({ kind: "fail", text: (ex.queue[ex.i] || {}).original + " — " + (r.detail || "") }); }
+  ex.i++;
+  restorePump();
+}
+
+/* ---------------- overlay: picker de backup ---------------- */
+
+function overlay() {
+  let el = document.getElementById("overlay");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "overlay";
+    el.className = "modal-mask";
+    document.getElementById("app").appendChild(el);
+  }
+  return el;
+}
+
+function closeOverlay() {
+  const el = document.getElementById("overlay");
+  if (el) el.remove();
+}
+
+function showNotice(text, after) {
+  const el = overlay();
+  el.innerHTML = '<div class="modal-card"><p class="modal-text">' +
+    escapeHtml(text).replace(/\n/g, "<br/>") +
+    '</p><button class="btn btn-primary" id="modal-ok">Entendi</button></div>';
+  el.querySelector("#modal-ok").onclick = function () {
+    closeOverlay();
+    if (after) after();
+  };
+}
+
+function showPicker(activeBackup) {
+  const el = overlay();
+  const has = !!(activeBackup && activeBackup.file);
+  const when = has ? new Date(activeBackup.sealedTs * 1000).toLocaleString("pt-BR") : "";
+  el.innerHTML =
+    '<div class="modal-card"><h2 class="modal-title">Restaurar backup</h2>' +
+    '<button class="btn btn-primary modal-big" id="modal-active"' + (has ? "" : " disabled") + ">" +
+    "Último backup automático" +
+    (has ? "<small>" + activeBackup.items.length + " item(ns) · " + when +
+          " · " + fmtBytes(activeBackup.fileBytes) + "</small>"
+        : "<small>nenhum backup ainda — rode uma limpeza primeiro</small>") +
+    "</button>" +
+    '<button class="btn btn-ghost" id="modal-other">Outro arquivo…</button>' +
+    '<button class="btn btn-ghost" id="modal-x">Cancelar</button></div>';
+  el.querySelector("#modal-active").onclick = function () {
+    closeOverlay();
+    state.replyIntent = "restore";
+    render();   // state.backup ja veio do inspect do picker
+  };
+  el.querySelector("#modal-other").onclick = function () { showDropForm(); };
+  el.querySelector("#modal-x").onclick = closeOverlay;
+}
+
+function showDropForm() {
+  const el = overlay();
+  el.innerHTML =
+    '<div class="modal-card"><h2 class="modal-title">Selecionar backup .vec</h2>' +
+    '<div class="dropzone" id="dz">Arraste o arquivo <b>.vec</b> aqui<br/>' +
+    '<small>ou use o botão abaixo</small></div>' +
+    '<button class="btn btn-primary" id="dz-pick">Selecionar arquivo…</button>' +
+    '<button class="btn btn-ghost" id="dz-x">Cancelar</button></div>';
+  const dz = el.querySelector("#dz");
+  dz.addEventListener("dragover", function (e) { e.preventDefault(); dz.classList.add("is-over"); });
+  dz.addEventListener("dragleave", function () { dz.classList.remove("is-over"); });
+  dz.addEventListener("drop", handleBackupDrop);
+  el.querySelector("#dz-pick").onclick = function () { sendToHost("pick-backup", {}); };
+  el.querySelector("#dz-x").onclick = closeOverlay;
+}
+
+const DROP_MAX_BYTES = 20 * 1024 * 1024;
+
+function handleBackupDrop(e) {
+  e.preventDefault();
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;
+  const realPath = f.path || "";          // WebView2 expoe; padrao web nao
+  if (realPath) { closeOverlay(); inspectBackup(realPath); return; }
+  if (f.size > DROP_MAX_BYTES) {
+    // Trava da spec: fecha o aviso e ABRE o seletor nativo direto.
+    showNotice("Arquivos acima de 20 MB não podem ser arrastados — selecione o arquivo.",
+      function () { sendToHost("pick-backup", {}); });
+    return;
+  }
+  const rd = new FileReader();
+  rd.onload = function () {
+    closeOverlay();
+    sendToHost("drop-temp", { name: f.name, b64: toBase64(rd.result) });
+  };
+  rd.readAsArrayBuffer(f);
+}
+
+function toBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
 
 if (isHosted()) {
   window.chrome.webview.addEventListener("message", onBridgeMessage);
@@ -676,6 +985,20 @@ if (isHosted()) {
 
 $("#btn-min").addEventListener("click", function () { sendToHost("window-minimize", {}); });
 $("#btn-close").addEventListener("click", function () { sendToHost("window-close", {}); });
+$("#sidebar").addEventListener("click", function (e) {
+  // Delegacao no continador: #sidebar e reescrito a cada renderSidebar.
+  const util = e.target.closest("[data-util]");
+  if (util) {
+    if (util.dataset.util === "quarantine") openQuarantine();
+    else openBackupPicker();
+    return;
+  }
+  const st = e.target.closest("[data-step]");
+  if (st && (state.utility || st.dataset.step !== state.step)) {
+    state.utility = null;
+    go(st.dataset.step);
+  }
+});
 $("#titlebar").addEventListener("mousedown", function (e) {
   if (e.target.closest(".titlebar-actions")) return;
   sendToHost("window-drag", {});
