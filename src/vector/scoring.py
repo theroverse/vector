@@ -38,3 +38,46 @@ def score_all(candidates: list[OrphanCandidate]) -> list[OrphanCandidate]:
     scored = [score_candidate(c) for c in candidates]
     scored.sort(key=lambda c: c.score, reverse=True)
     return scored
+
+
+# Frases em linguagem simples para a GUI (campo summaryPlain). Casadas por
+# substring com a descricao da evidencia de maior peso: a fonte de verdade
+# dos textos tecnicos continua nos scanners; aqui so a "traducao".
+_PLAIN_PHRASES: tuple[tuple[str, str], ...] = (
+    ("nome ausente nos programas instalados",
+     "não aparece na lista de programas instalados do Windows, "
+     "mas ainda há pastas dele no sistema"),
+    ("chave sem programa correspondente",
+     "chave de registro sem programa correspondente — a remoção é manual"),
+    ("InstallLocation inexistente",
+     "o registro aponta para uma pasta que não existe mais — a remoção é manual"),
+    ("Run aponta",
+     "iniciava com o Windows, mas o programa apontado não existe mais "
+     "— a remoção é manual"),
+    ("App Path quebrado",
+     "atalho de execução do Windows quebrado — a remoção é manual"),
+    ("servico aponta",
+     "serviço aponta para um executável que não existe mais — a remoção é manual"),
+    ("servico sem programa",
+     "serviço sem programa correspondente instalado — a remoção é manual"),
+    ("tarefa executa binario",
+     "tarefa agendada aponta para um executável que não existe mais "
+     "— a remoção é manual"),
+    ("tarefa sem programa",
+     "tarefa agendada sem programa correspondente — a remoção é manual"),
+    ("resta ", "só tem resto de instalador/desinstalador para trás"),
+    ("pasta abandonada", "está sem uso há muito tempo"),
+    ("pasta vazia", "está vazia ou ilegível"),
+)
+
+_FALLBACK_FOLDER = "possível resíduo de programa desinstalado"
+_FALLBACK_OTHER = "remoção manual recomendada"
+
+
+def plain_summary(candidate: OrphanCandidate) -> str:
+    """Uma frase-motivo, derivada da evidencia de maior peso. Nunca levanta excecao."""
+    for ev in sorted(candidate.evidences, key=lambda e: e.weight, reverse=True):
+        for needle, phrase in _PLAIN_PHRASES:
+            if needle in ev.description:
+                return phrase
+    return _FALLBACK_FOLDER if candidate.kind == "folder" else _FALLBACK_OTHER

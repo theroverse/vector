@@ -63,3 +63,21 @@ def test_bridge_payload_is_json_serializable():
     import json
 
     json.dumps(to_report_payload(_report()), ensure_ascii=False)
+
+
+def test_payload_includes_summary_plain():
+    """A GUI exige uma frase-motivo legivel por candidato (spec 2026-09-21)."""
+    payload = to_report_payload(_report())
+    for cand in payload["candidates"]:
+        assert cand["summaryPlain"]
+
+
+def test_cli_json_gains_summary_plain_adotivo(tmp_path):
+    """Contrato Orbit: snake_case preservado, campo novo apenas aditivo."""
+    out = write_json(_report(), tmp_path / "rel.json")
+    import json
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    cand = data["candidates"][0]
+    assert "summary_plain" in cand and cand["summary_plain"]
+    assert "size_bytes" in cand  # nao removeu nada do shape antigo

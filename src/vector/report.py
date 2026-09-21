@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from vector.models import OrphanCandidate, ScanReport
+from vector.scoring import plain_summary
 
 _KIND_ICON = {
     "folder": "DIR",
@@ -103,6 +104,7 @@ def write_json(report: ScanReport, destination: Path) -> Path:
                 "kind": c.kind,
                 "path": c.path,
                 "label": c.label,
+                "summary_plain": plain_summary(c),
                 "score": c.score,
                 "confidence": c.confidence,
                 "sensitive": c.sensitive,
@@ -137,6 +139,7 @@ def to_report_payload(report: ScanReport) -> dict:
                 "kind": c.kind,
                 "path": c.path,
                 "label": c.label,
+                "summaryPlain": plain_summary(c),
                 "score": c.score,
                 "confidence": c.confidence,
                 "sensitive": c.sensitive,

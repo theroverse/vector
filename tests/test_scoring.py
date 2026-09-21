@@ -1,7 +1,7 @@
-"""Pontuacao: soma de pesos, thresholds e allowlist."""
+"""Pontuacao: soma de pesos, thresholds, allowlist e frase-motivo (plain)."""
 
 from vector.models import Evidence, OrphanCandidate
-from vector.scoring import score_all, score_candidate
+from vector.scoring import plain_summary, score_all, score_candidate
 
 
 def _cand(label, path, weights):
@@ -45,3 +45,38 @@ def test_score_all_sorts_desc():
         _cand("B", r"C:\x\B", [40, 30]),
     ])
     assert [c.label for c in ranked] == ["B", "A"]
+
+
+# ---------------- plain_summary: frase-motivo para usuarios leigos ----------
+
+def _pcand(kind, *descriptions):
+    return OrphanCandidate(
+        kind=kind, path=r"C:\Program Files\Foo", label="Foo",
+        evidences=[Evidence(description=d, weight=w, source="t")
+                   for w, d in descriptions],
+    )
+
+
+def test_plain_summary_uses_dominant_evidence():
+    c = _pcand("folder",
+               (10, "+10 pasta vazia ou ilegivel"),
+               (40, "+40 nome ausente nos programas instalados"))
+    assert "lista de programas instalados" in plain_summary(c)
+
+
+def test_plain_summary_registry_manual():
+    c = _pcand("registry", (40, "+40 chave sem programa correspondente instalado"))
+    s = plain_summary(c)
+    assert "registro" in s and "manual" in s
+
+
+def test_plain_summary_leftover_uninstaller():
+    c = _pcand("folder", (15, "+15 resta unins000.exe sem entrada de desinstalacao"))
+    assert plain_summary(c) == "só tem resto de instalador/desinstalador para trás"
+
+
+def test_plain_summary_fallbacks():
+    empty = OrphanCandidate(kind="folder", path=r"C:\x", label="x", evidences=[])
+    assert plain_summary(empty) == "possível resíduo de programa desinstalado"
+    assert "manual" in plain_summary(
+        _pcand("service", (7, "+7 evidencia que nao conheco")))
