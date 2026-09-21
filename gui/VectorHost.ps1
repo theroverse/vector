@@ -20,9 +20,14 @@
 
     Message protocol (JSON, one object per message):
       JS -> PS : { type: 'ready' | 'window-close' | 'window-minimize'
-                        | 'window-drag' | 'start-scan' | 'remove-folder',
+                        | 'window-drag' | 'start-scan' | 'remove-folder'
+                        | 'engine-call' | 'pick-backup' | 'export-backup'
+                        | 'drop-temp',
                    payload: <anything the handler needs> }
-      PS -> JS : { type: 'host-ready' | 'not-implemented' | 'bridge-error',
+      PS -> JS : { type: 'host-ready' | 'scan-result' | 'scan-error'
+                        | 'remove-result' | 'engine-reply' | 'backup-picked'
+                        | 'backup-exported' | 'open-backup'
+                        | 'not-implemented' | 'bridge-error',
                    payload: <...> }
 #>
 
@@ -119,6 +124,28 @@ else {
 $indexPath = Join-Path $Root 'gui\vector\index.html'
 $iconPath = Join-Path $Root 'gui\Vector.ico'
 
+# --- arquivo .vec recebido por associacao (duplo-clique => exe --open <path>) --
+$script:OpenBackup = $null
+for ($i = 0; $i -lt ($args.Count - 1); $i++) {
+    if ($args[$i] -eq '--open') { $script:OpenBackup = [string]$args[$i + 1] }
+}
+
+# Associa .vec ao exe em HKCU (nao exige admin; idempotente; so no exe
+# empacotado - em dev o registro apontaria pra um powershell -File).
+function Register-VecAssociation {
+    if ($script:IsScript) { return }
+    try {
+        New-Item -Path 'HKCU:\Software\Classes\.vec' -Force | Out-Null
+        Set-ItemProperty -Path 'HKCU:\Software\Classes\.vec' -Name '(default)' -Value 'Vector.Backup'
+        New-Item -Path 'HKCU:\Software\Classes\Vector.Backup' -Force | Out-Null
+        Set-ItemProperty -Path 'HKCU:\Software\Classes\Vector.Backup' -Name '(default)' -Value 'Backup do Vector'
+        New-Item -Path 'HKCU:\Software\Classes\Vector.Backup\shell\open\command' -Force | Out-Null
+        Set-ItemProperty -Path 'HKCU:\Software\Classes\Vector.Backup\shell\open\command' `
+            -Name '(default)' -Value "`"$exeFullPath`" --open `"%1`""
+    } catch { }   # associacao e conforto, nunca motivo de falha no boot
+}
+Register-VecAssociation
+
 # Elevacao ANTES de qualquer UI: sem admin o scan nao enxerga boa parte de
 # Program Files / ProgramData e o relatorio sairia incompleto. Relanca
 # elevado e sai; o filho elevado entra com -SkipElevationCheck.
@@ -127,13 +154,17 @@ if (-not $SkipElevationCheck) {
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
+        # o --open de uma associacao precisa sobreviver ao relance elevado,
+        # senao duplo-clique num .vec abriria o Vector sem o backup
+        $extra = @()
+        if ($script:OpenBackup) { $extra = @('--open', "`"$script:OpenBackup`"") }
         if ($script:IsScript) {
             Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
                 '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-SkipElevationCheck'
-            )
+            ) + $extra
         }
         else {
-            Start-Process -FilePath $exeFullPath -Verb RunAs -ArgumentList @('-SkipElevationCheck')
+            Start-Process -FilePath $exeFullPath -Verb RunAs -ArgumentList (@('-SkipElevationCheck') + $extra)
         }
         exit
     }
@@ -341,6 +372,11 @@ function Handle-Message {
                     'Python nao encontrado no PATH: a interface vai usar dados de exemplo.'
                 })
             }
+            if ($script:OpenBackup) {
+                # duplo-clique num .vec: pula direto pra tela de restauracao
+                Send-ToJs -Type 'open-backup' -Payload @{ path = $script:OpenBackup }
+                $script:OpenBackup = $null
+            }
         }
         'window-close' {
             # A limpeza pode estar no meio de um fluxo de confirmacao.
@@ -395,6 +431,73 @@ function Handle-Message {
                 Send-ToJs -Type 'remove-result' -Payload @{
                     removed = $false; path = $path
                     detail = "Motor indisponivel: $($_.Exception.Message)" }
+            }
+        }
+        'engine-call' {
+            # Passa-thru para os comandos de quarentena/backup do motor. A
+            # whitelist existe so pra host nenhum virar canonicalizador de
+            # cmd arbitrario; 'scan'/'remove' continuam pelos handlers
+            # dedicados acima (mesmo gateway de seguranca do motor).
+            $allowed = @('quarantine-inspect', 'quarantine-seal',
+                         'quarantine-restore', 'quarantine-purge',
+                         'quarantine-export', 'backup-inspect', 'backup-restore')
+            $cmd = [string]$Msg.payload.cmd
+            if ($allowed -notcontains $cmd) {
+                Send-ToJs -Type 'engine-reply' -Payload @{
+                    cmd = $cmd; ok = $false; error = "comando nao permitido: $cmd" }
+                return
+            }
+            $req = @{ cmd = $cmd }
+            foreach ($k in @('id', 'path', 'dest')) {
+                if ($Msg.payload.$k) { $req[$k] = [string]$Msg.payload.$k }
+            }
+            try {
+                $resp = Invoke-Engine -Request $req
+                Send-ToJs -Type 'engine-reply' -Payload @{
+                    cmd = $cmd; ok = [bool]$resp.ok
+                    result = $resp.result; error = $resp.error }
+            } catch {
+                Send-ToJs -Type 'engine-reply' -Payload @{
+                    cmd = $cmd; ok = $false; error = $_.Exception.Message }
+            }
+        }
+        'pick-backup' {
+            $dlg = New-Object System.Windows.Forms.OpenFileDialog
+            $dlg.Filter = 'Backup do Vector (*.vec)|*.vec|Todos os arquivos (*.*)|*.*'
+            $dlg.Title = 'Selecionar backup .vec'
+            $res = $dlg.ShowDialog($form)
+            $picked = if ($res -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.FileName } else { $null }
+            Send-ToJs -Type 'backup-picked' -Payload @{ path = $picked }
+        }
+        'export-backup' {
+            $dlg = New-Object System.Windows.Forms.SaveFileDialog
+            $dlg.Filter = 'Backup do Vector (*.vec)|*.vec'
+            $dlg.FileName = 'vector-backup.vec'
+            $dlg.Title = 'Salvar copia do backup'
+            $res = $dlg.ShowDialog($form)
+            if ($res -ne [System.Windows.Forms.DialogResult]::OK) {
+                Send-ToJs -Type 'backup-exported' -Payload @{ ok = $false; detail = 'cancelado' }
+                return
+            }
+            try {
+                $resp = Invoke-Engine -Request @{ cmd = 'quarantine-export'; dest = $dlg.FileName }
+                Send-ToJs -Type 'backup-exported' -Payload @{
+                    ok = [bool]$resp.ok; detail = $(if ($resp.ok) { $resp.result.detail } else { $resp.error }) }
+            } catch {
+                Send-ToJs -Type 'backup-exported' -Payload @{ ok = $false; error = $_.Exception.Message }
+            }
+        }
+        'drop-temp' {
+            # Fallback do drag&drop sem File.path (limite de 20 MB travado na GUI):
+            # materializa o conteudo recebido em %TEMP% e devolve o caminho.
+            try {
+                $bytes = [Convert]::FromBase64String([string]$Msg.payload.b64)
+                $tmp = Join-Path ([System.IO.Path]::GetTempPath()) (
+                    'vector-drop-' + [guid]::NewGuid().ToString('N') + '.vec')
+                [System.IO.File]::WriteAllBytes($tmp, $bytes)
+                Send-ToJs -Type 'backup-picked' -Payload @{ path = $tmp }
+            } catch {
+                Send-ToJs -Type 'backup-picked' -Payload @{ path = $null; error = $_.Exception.Message }
             }
         }
         default {
