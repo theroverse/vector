@@ -43,7 +43,9 @@ function isHosted() {
 
 function sendToHost(type, payload) {
   if (!isHosted()) return false;
-  window.chrome.webview.postMessage({ type: type, payload: payload });
+  // JSON.stringify obrigatorio: o host le com TryGetWebMessageAsString(),
+  // que devolve null pra objeto cru (padrao provado no genesis/app.js).
+  window.chrome.webview.postMessage(JSON.stringify({ type: type, payload: payload }));
   return true;
 }
 
