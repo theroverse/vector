@@ -24,6 +24,10 @@ New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 # VectorHost.ps1 o executa via `python vector-cli.py --serve` na pasta extraida.
 $includeDirs = @(
     'gui\vector',
+    # DLLs do SDK WebView2 (NuGet) - o VectorHost.ps1 faz Add-Type nelas
+    # a partir da pasta extraida; sem elas o exe morre no boot (mesma
+    # pasta/layout do genesis/gui/webview2/).
+    'gui\webview2',
     'src'
 )
 

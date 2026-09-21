@@ -12,10 +12,11 @@
     ('start-scan', 'remove-folder') are deliberate, documented stubs that
     answer 'not-implemented'.
 
-    PHASE 2: those two handlers call the real Python engine
-    (src/vector/engine.py) - run_scan() for the evidence tree and the
-    same guarded removal path as vector-cli.py --clean. Scoring and
-    safety rules live in Python and must not be reimplemented here.
+    PHASE 2 (today): those two handlers call the real Python engine
+    (src/vector/bridge.py, a persistent `python vector-cli.py --serve`
+    child) - run_scan() for the evidence tree and the same guarded
+    removal path as vector-cli.py --clean. Scoring and safety rules live
+    in Python and must not be reimplemented here.
 
     Message protocol (JSON, one object per message):
       JS -> PS : { type: 'ready' | 'window-close' | 'window-minimize'
@@ -163,6 +164,17 @@ public static class NativeDrag {
     }
 }
 '@
+
+# --- WebView2 assemblies (shipped in gui/webview2/, from the NuGet pkg) -----
+# Same pattern as genesis/gui/WizardHost.ps1: PowerShell doesn't resolve SDK
+# assemblies on its own - without these Add-Type lines the New-Object of the
+# WebView2 control below dies with "Nao e possivel localizar o tipo
+# [Microsoft.Web.WebView2.WinForms.WebView2]". WebView2Loader.dll (native) is
+# found via PATH.
+$wv2Dir = Join-Path $Root 'gui\webview2'
+Add-Type -Path (Join-Path $wv2Dir 'Microsoft.Web.WebView2.Core.dll')
+Add-Type -Path (Join-Path $wv2Dir 'Microsoft.Web.WebView2.WinForms.dll')
+$env:PATH = "$wv2Dir;$env:PATH"
 
 # ------------------------------------------------------------------ window --
 $form = New-Object System.Windows.Forms.Form
